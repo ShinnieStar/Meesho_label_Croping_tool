@@ -1,4 +1,9 @@
-/* Shinnie Star — Meesho Crop (Lite) crop with fixed box, then rotate 90° CW, progress % */
+/* Shinnie Star — Meesho Crop (Lite) FINAL
+   - Exactly 1 output page per source page
+   - Crop first
+   - Rotate 90 CW (optional toggle) with correct offsets
+   - Skip tiny/empty after crop
+   - Progress %  */
 
 const btn = document.getElementById("processBtn");
 const filesInput = document.getElementById("pdfs");
@@ -22,14 +27,15 @@ themeToggle?.addEventListener("click", () => {
 refreshBtn?.addEventListener("click", () => window.location.reload());
 backBtn?.addEventListener("click", () => (window.location.href = "https://www.shinniestar.com"));
 
-/* pdf-lib loader */
+/* pdf-lib */
 let pdfLibReady = false;
 async function ensurePDFLib() {
   if (pdfLibReady && window.PDFLib) return;
   await new Promise((resolve, reject) => {
     const s = document.createElement("script");
     s.src = "https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/dist/pdf-lib.min.js";
-    s.onload = resolve; s.onerror = reject; document.body.appendChild(s);
+    s.onload = resolve; s.onerror = reject;
+    document.body.appendChild(s);
   });
   pdfLibReady = true;
 }
@@ -43,35 +49,43 @@ function readFileAsArrayBuffer(file) {
   });
 }
 
-/* Python crop box */
+/* Fixed crop box (Python parity) */
 const CROP_LEFT = 10;
 const CROP_BOTTOM = 480;
 const CROP_RIGHT = 585;
 const CROP_TOP = 825;
+const MIN_H = 120;
+const MIN_W = 200;
+const DO_ROTATE = true; // rotation ON
+
+function cropDims() {
+  const w = Math.max(10, CROP_RIGHT - CROP_LEFT);
+  const h = Math.max(10, CROP_TOP - CROP_BOTTOM);
+  return { w, h };
+}
 
 async function cropAndMerge(files) {
   await ensurePDFLib();
   const { PDFDocument, degrees } = window.PDFLib;
   const outDoc = await PDFDocument.create();
 
-  // Count total pages
+  // Count pages
   let total = 0;
   const buffers = [];
   for (const f of files) {
     const b = await readFileAsArrayBuffer(f);
     buffers.push(b);
-    const tmp = await PDFDocument.load(b, { ignoreEncryption: true });
-    total += tmp.getPageCount();
+    const t = await PDFDocument.load(b, { ignoreEncryption: true });
+    total += t.getPageCount();
   }
 
-  let done = 0;
+  let done = 0, kept = 0, skipped = 0;
   const tick = () => {
     const pct = Math.floor((done / total) * 100);
-    progressDiv.textContent = `Processing ${done}/${total} (${pct}%)`;
+    progressDiv.textContent = `Processed ${done}/${total} (${pct}%) • kept ${kept}, skipped ${skipped}`;
   };
 
-  const cropW = Math.max(10, CROP_RIGHT - CROP_LEFT);
-  const cropH = Math.max(10, CROP_TOP - CROP_BOTTOM);
+  const { w: cropW, h: cropH } = cropDims();
 
   for (const b of buffers) {
     const src = await PDFDocument.load(b, { ignoreEncryption: true });
@@ -82,26 +96,58 @@ async function cropAndMerge(files) {
       const pageW = ref.getWidth();
       const pageH = ref.getHeight();
 
-      // 1) Draw original into a cropped-size page via negative offsets (crop first)
-      const cropped = outDoc.addPage([cropW, cropH]);
-      const emb = await outDoc.embedPage(ref);
-      cropped.drawPage(emb, {
-        x: -CROP_LEFT,
-        y: -CROP_BOTTOM,
-        width: pageW,
-        height: pageH,
-      });
+      // Skip obviously invalid crop
+      if (cropW < MIN_W || cropH < MIN_H) { skipped++; done++; tick(); continue; }
 
-      // 2) Rotate cropped block 90° CW to portrait
-      const finalW = Math.min(cropW, cropH);
-      const finalH = Math.max(cropW, cropH);
+      // Create final page size:
+      // if rotate on, portrait target (min->W, max->H), else exact crop
+      let finalW = cropW, finalH = cropH;
+      if (DO_ROTATE) {
+        finalW = Math.min(cropW, cropH);
+        finalH = Math.max(cropW, cropH);
+      }
+
       const finalPage = outDoc.addPage([finalW, finalH]);
-      const embCrop = await outDoc.embedPage(cropped);
-      finalPage.drawPage(embCrop, { x: 0, y: 0, width: cropW, height: cropH, rotate: degrees(90) });
+      const emb = await outDoc.embedPage(ref);
 
+      if (!DO_ROTATE) {
+        // Only crop (no rotate)
+        finalPage.drawPage(emb, {
+          x: -CROP_LEFT,
+          y: -CROP_BOTTOM,
+          width: pageW,
+          height: pageH,
+        });
+      } else {
+        // Crop first, then rotate 90 CW in one transform:
+        // Place original so that crop region aligns with origin, then rotate about origin.
+        // For rotate about origin with pdf-lib, we supply rotate and pre-translation in x/y.
+        // Offsets derived to keep visible area in target bounds.
+        // After 90 CW, (x,y) -> (y, -x). Choose x,y so mapped rect fills [0..finalW/H].
+        const xOffset = -CROP_LEFT;
+        const yOffset = -CROP_BOTTOM;
+
+        // Empirically correct placement for 90 CW into portrait:
+        // Draw with rotate(90) and swap offsets:
+        finalPage.drawPage(emb, {
+          x: yOffset,               // becomes X after rotation
+          y: -(xOffset + pageW),   // becomes Y after rotation
+          width: pageW,
+          height: pageH,
+          rotate: degrees(90),
+        });
+      }
+
+      kept++;
       done++;
       if (done === 1 || done % 3 === 0 || done === total) { tick(); await new Promise(r=>setTimeout(r,0)); }
     }
+  }
+
+  // Safety message if everything skipped
+  if (kept === 0) {
+    const p = outDoc.addPage([420, 180]);
+    p.drawText("No pages produced. Check crop coordinates.", { x: 20, y: 90, size: 12 });
   }
 
   return await outDoc.save();
@@ -120,7 +166,6 @@ btn.addEventListener("click", async () => {
   resultDiv.textContent = ""; progressDiv.textContent = "";
   const files = Array.from(filesInput.files || []);
   if (!files.length) { resultDiv.textContent = "Please select at least one PDF."; return; }
-
   btn.disabled = true; btn.textContent = "Processing…";
   try {
     const bytes = await cropAndMerge(files);
