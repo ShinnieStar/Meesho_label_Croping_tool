@@ -1,7 +1,6 @@
 /* Shinnie Star — Meesho Crop (Lite)
    A) Crop & Download (no rotate)
-   B) Rotate PDF (upload any, rotate 90 CW & download)
-*/
+   B) Rotate PDF (upload any, rotate 90 CW & download) */
 
 const btnCropDownload = document.getElementById("btnCropDownload");
 const filesInput = document.getElementById("pdfs");
@@ -15,6 +14,11 @@ const rotateStatus = document.getElementById("rotateStatus");
 const refreshBtn = document.getElementById("refreshBtn");
 const backBtn = document.getElementById("backBtn");
 const themeToggle = document.getElementById("themeToggle");
+
+/* Guard: stop if critical elements missing */
+if (!btnCropDownload || !filesInput) {
+  console.error("Elements not found: check index.html IDs");
+}
 
 /* Theme */
 (function initTheme() {
@@ -35,9 +39,13 @@ let pdfLibReady = false;
 async function ensurePDFLib() {
   if (pdfLibReady && window.PDFLib) return;
   await new Promise((resolve, reject) => {
+    const id = "pdf-lib-script";
+    if (document.getElementById(id)) return resolve();
     const s = document.createElement("script");
     s.src = "https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/dist/pdf-lib.min.js";
-    s.onload = resolve; s.onerror = reject; document.body.appendChild(s);
+    s.id = id;
+    s.onload = resolve; s.onerror = reject;
+    document.body.appendChild(s);
   });
   pdfLibReady = true;
 }
@@ -142,7 +150,6 @@ async function rotateAndDownload(file) {
     const w = page.getWidth();
     const h = page.getHeight();
 
-    // Target canvas swapped to avoid blank issues
     const finalPage = outDoc.addPage([h, w]);
     const emb = await outDoc.embedPage(page);
     finalPage.drawPage(emb, { x: 0, y: 0, width: w, height: h, rotate: degrees(90) });
@@ -157,8 +164,8 @@ async function rotateAndDownload(file) {
   rotateStatus.textContent = "Done (100%).";
 }
 
-/* Events */
-btnCropDownload.addEventListener("click", async () => {
+/* Event bindings */
+btnCropDownload?.addEventListener("click", async () => {
   resultDiv.textContent = ""; progressDiv.textContent = "";
   const files = Array.from(filesInput.files || []);
   if (!files.length) { resultDiv.textContent = "Please select at least one PDF."; return; }
@@ -168,7 +175,7 @@ btnCropDownload.addEventListener("click", async () => {
   finally { btnCropDownload.disabled = false; btnCropDownload.textContent = "Crop & Download"; }
 });
 
-btnRotateDownload.addEventListener("click", async () => {
+btnRotateDownload?.addEventListener("click", async () => {
   rotateStatus.textContent = "";
   const f = rotateFile.files?.[0];
   if (!f) { rotateStatus.textContent = "Select a PDF first."; return; }
