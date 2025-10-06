@@ -8,7 +8,8 @@
 }
 
 * { box-sizing: border-box; }
-body { margin:0; font-family: system-ui, Arial; background:var(--bg); color:var(--txt); }
+html, body { height:100%; }
+body { margin:0; font-family: system-ui, Arial, sans-serif; background:var(--bg); color:var(--txt); }
 
 /* Top bar */
 .topbar {
@@ -26,7 +27,7 @@ body { margin:0; font-family: system-ui, Arial; background:var(--bg); color:var(
   padding:24px; border-radius:14px; box-shadow: 0 10px 30px rgba(0,0,0,.15);
   border:1px solid var(--border);
 }
-h2 { margin-top:0; }
+h2 { margin:0 0 10px 0; }
 
 /* Form */
 label { display:block; margin:12px 0 6px; color:var(--muted); }
@@ -38,19 +39,14 @@ button {
   margin-top:14px; padding:12px 16px; border:0; background:var(--acc);
   color:#061022; font-weight:700; border-radius:10px; cursor:pointer;
 }
+button:disabled { opacity:.7; cursor:not-allowed; }
+
 #result, #progress { margin-top:12px; font-size:14px; opacity:.95; }
 
-/* Controls row */
-.controls { margin:10px 0 6px; display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
-label.inline { display:inline-block; margin:0 12px 0 0; }
-select {
-  padding:8px 10px; background:var(--ghost); color:var(--txt);
-  border:1px solid var(--border); border-radius:8px;
-}
-.muted { color: var(--muted); font-size:12px; }
+/* Safety: hide any leftover sort controls if cached HTML shows them */
+.controls, select#sortBy { display:none !important; }
 
 /* Small screen tweaks */
 @media (max-width: 480px) {
   .container { margin: 12px 8px 24px; padding:16px; }
-  .controls { gap:8px; }
 }
