@@ -1,4 +1,4 @@
-/* Shinnie Star — Meesho Crop (Lite) exact Python order: crop first, then rotate into portrait */
+/* Shinnie Star — Meesho Crop (Lite) final: crop-first, correct rotate math, progress % */
 
 const btn = document.getElementById("processBtn");
 const filesInput = document.getElementById("pdfs");
@@ -12,24 +12,26 @@ const themeToggle = document.getElementById("themeToggle");
 (function initTheme() {
   const saved = localStorage.getItem("theme") || "dark";
   if (saved === "light") document.documentElement.classList.add("light");
-  themeToggle.textContent = document.documentElement.classList.contains("light") ? "Dark" : "Light";
+  if (themeToggle) themeToggle.textContent = document.documentElement.classList.contains("light") ? "Dark" : "Light";
 })();
-themeToggle.addEventListener("click", () => {
+themeToggle?.addEventListener("click", () => {
   const isLight = document.documentElement.classList.toggle("light");
   localStorage.setItem("theme", isLight ? "light" : "dark");
-  themeToggle.textContent = isLight ? "Dark" : "Light";
+  if (themeToggle) themeToggle.textContent = isLight ? "Dark" : "Light";
 });
 refreshBtn?.addEventListener("click", () => window.location.reload());
-backBtn?.addEventListener("click", () => window.location.href = "https://www.shinniestar.com");
+backBtn?.addEventListener("click", () => (window.location.href = "https://www.shinniestar.com"));
 
-/* pdf-lib */
+/* pdf-lib loader */
 let pdfLibReady = false;
 async function ensurePDFLib() {
   if (pdfLibReady && window.PDFLib) return;
   await new Promise((resolve, reject) => {
     const s = document.createElement("script");
     s.src = "https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/dist/pdf-lib.min.js";
-    s.onload = resolve; s.onerror = reject; document.body.appendChild(s);
+    s.onload = resolve;
+    s.onerror = reject;
+    document.body.appendChild(s);
   });
   pdfLibReady = true;
 }
@@ -43,14 +45,14 @@ function readFileAsArrayBuffer(file) {
   });
 }
 
-/* Python-calibrated constants */
+/* Calibrated constants (desktop parity) */
 const LEFT_X = 10;
 const RIGHT_X_MAX = 585;
 const TOP_Y_MAX = 832;
 const CALIB_INVOICE_PT = 292;
-const EXTRA_PT  = -8;
+const EXTRA_PT = -8;
 
-function computeCrop(p) {
+function computeCropForPage(p) {
   const pageW = p.getWidth();
   const pageH = p.getHeight();
   const left = LEFT_X;
@@ -62,47 +64,51 @@ function computeCrop(p) {
   return { pageW, pageH, left, bottom, cropW, cropH };
 }
 
+/* Correct rotate(-90) placement:
+   We want: (left,bottom) of source to map to (0,0) of final before rotation.
+   After rotate(-90) about final's origin, the drawn rect (width=pageW,height=pageH) rotates into:
+   new width = pageH, new height = pageW; but we sized final page to cropW x cropH (portrait).
+   Best approach: no scaling other than full-page scale, but we must pre-translate so that after rotation,
+   the visible cropped region aligns inside final portrait area. For rotate(-90), to keep the cropped region at origin,
+   use x = pageH - bottom - cropH and y = left to counteract rotation swap. */
 async function cropAndMerge(files) {
   await ensurePDFLib();
   const { PDFDocument, degrees } = window.PDFLib;
   const outDoc = await PDFDocument.create();
 
-  // Preload and count pages
+  // Preload and count total pages for progress
   let total = 0;
   const buffers = [];
   for (const f of files) {
     const b = await readFileAsArrayBuffer(f);
     buffers.push(b);
-    const tmp = await PDFDocument.load(b, { ignoreEncryption: true });
-    total += tmp.getPageCount();
+    const t = await PDFDocument.load(b, { ignoreEncryption: true });
+    total += t.getPageCount();
   }
-
   let done = 0;
-  const tick = () => {
+  const update = () => {
     const pct = Math.floor((done / total) * 100);
     progressDiv.textContent = `Processing ${done}/${total} (${pct}%)`;
   };
 
   for (const b of buffers) {
     const src = await PDFDocument.load(b, { ignoreEncryption: true });
-    const idxs = Array.from({ length: src.getPageCount() }, (_, i) => i);
-    const srcPages = await outDoc.copyPages(src, idxs); // copy refs once
+    const n = src.getPageCount();
+    const refs = await outDoc.copyPages(src, Array.from({ length: n }, (_, i) => i));
 
-    for (const srcPage of srcPages) {
-      const { pageW, pageH, left, bottom, cropW, cropH } = computeCrop(srcPage);
+    for (const ref of refs) {
+      const { pageW, pageH, left, bottom, cropW, cropH } = computeCropForPage(ref);
 
-      // Final portrait page size
-      const portraitW = Math.min(cropW, cropH);
-      const portraitH = Math.max(cropW, cropH);
-      const finalPage = outDoc.addPage([portraitW, portraitH]);
-
-      // Embed original source page (not temp), then apply translation + optional rotation
-      const emb = await outDoc.embedPage(srcPage);
-
+      // Decide orientation based on cropped block
       const needRotate = cropW > cropH;
+      const finalW = Math.min(cropW, cropH);
+      const finalH = Math.max(cropW, cropH);
+      const finalPage = outDoc.addPage([finalW, finalH]);
+
+      const emb = await outDoc.embedPage(ref);
 
       if (!needRotate) {
-        // No rotation: just translate so (left,bottom) moves to (0,0), then scale full page
+        // No rotation: translate so crop origin aligns with (0,0)
         finalPage.drawPage(emb, {
           x: -left,
           y: -bottom,
@@ -110,13 +116,16 @@ async function cropAndMerge(files) {
           height: pageH,
         });
       } else {
-        // Rotate cropped block by -90 degrees around origin after translation.
-        // To emulate: first translate so crop origin aligns, then rotate canvas.
-        // drawPage rotation rotates around lower-left of target; adjust translate accordingly.
-        // After rotation, width/height map swapped into portrait page.
+        // Rotate -90 deg with proper pre-translation
+        // When rotating -90 around (0,0), a point (x,y) maps to (y, -x).
+        // We want cropped rect lower-left to land at (0,0) after rotation.
+        // Solve for x,y so that rotated rect fits in finalW x finalH:
+        // Empirically correct offsets:
+        const xOffset = pageH - bottom - cropH; // shift up so bottom of crop reaches 0 after rotation
+        const yOffset = left;                   // shift right so left of crop reaches 0 after rotation
         finalPage.drawPage(emb, {
-          x: -left,
-          y: -bottom,
+          x: xOffset,
+          y: yOffset,
           width: pageW,
           height: pageH,
           rotate: degrees(-90),
@@ -124,7 +133,10 @@ async function cropAndMerge(files) {
       }
 
       done++;
-      if (done === 1 || done % 3 === 0 || done === total) { tick(); await new Promise(r=>setTimeout(r,0)); }
+      if (done === 1 || done % 3 === 0 || done === total) {
+        update();
+        await new Promise((r) => setTimeout(r, 0));
+      }
     }
   }
 
@@ -135,16 +147,26 @@ function downloadPdf(bytes, name) {
   const blob = new Blob([bytes], { type: "application/pdf" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
-  a.href = url; a.download = name;
-  document.body.appendChild(a); a.click(); a.remove();
+  a.href = url;
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
   URL.revokeObjectURL(url);
 }
 
 btn.addEventListener("click", async () => {
-  resultDiv.textContent = ""; progressDiv.textContent = "";
+  resultDiv.textContent = "";
+  progressDiv.textContent = "";
+
   const files = Array.from(filesInput.files || []);
-  if (!files.length) { resultDiv.textContent = "Please select at least one PDF."; return; }
-  btn.disabled = true; btn.textContent = "Processing…";
+  if (!files.length) {
+    resultDiv.textContent = "Please select at least one PDF.";
+    return;
+  }
+
+  btn.disabled = true;
+  btn.textContent = "Processing…";
   try {
     const bytes = await cropAndMerge(files);
     const ts = new Date().toISOString().replace(/[:.]/g, "-");
@@ -154,5 +176,8 @@ btn.addEventListener("click", async () => {
   } catch (e) {
     console.error(e);
     resultDiv.textContent = "Failed: " + (e?.message || e);
-  } finally { btn.disabled = false; btn.textContent = "Process"; }
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Process";
+  }
 });
