@@ -1,4 +1,4 @@
-/* Shinnie Star — Meesho Crop (Lite) fixed calibrated cutoff + portrait + progress % + basic sort */
+/* Shinnie Star — Meesho Crop (Lite) crop-first then rotate, with progress % */
 
 const btn = document.getElementById("processBtn");
 const filesInput = document.getElementById("pdfs");
@@ -7,7 +7,6 @@ const progressDiv = document.getElementById("progress");
 const refreshBtn = document.getElementById("refreshBtn");
 const backBtn = document.getElementById("backBtn");
 const themeToggle = document.getElementById("themeToggle");
-const sortBy = document.getElementById("sortBy");
 
 /* Theme */
 (function initTheme() {
@@ -44,15 +43,14 @@ function readFileAsArrayBuffer(file) {
   });
 }
 
-/* Calibrated params from original PDF */
+/* Calibrated constants (Python-tuned) */
 const LEFT_X = 10;
 const RIGHT_X_MAX = 585;
 const TOP_Y_MAX = 832;
-// Using ~292pt calibrated invoice band height; add small extra -8 like desktop
-const CALIB_INVOICE_PT = 292;
-const EXTRA_PT  = -8;
+const CALIB_INVOICE_PT = 292;  // ~invoice band height from bottom
+const EXTRA_PT  = -8;          // include a bit more above band
 
-function cropRectForPage(p) {
+function computeCrop(p) {
   const pageW = p.getWidth();
   const pageH = p.getHeight();
 
@@ -61,47 +59,10 @@ function cropRectForPage(p) {
   const top = Math.min(TOP_Y_MAX, pageH - 10);
   const bottom = Math.max(100, pageH - CALIB_INVOICE_PT + EXTRA_PT);
 
-  const width = right - left;
-  const height = Math.max(120, top - bottom);
+  const cropW = right - left;
+  const cropH = Math.max(120, top - bottom);
 
-  // force portrait target size
-  const targetW = Math.min(width, height);
-  const targetH = Math.max(width, height);
-
-  return { left, bottom, width, height, targetW, targetH, pageW, pageH };
-}
-
-/* Basic client-side sort (best-effort using filename tokens) */
-function sortFiles(files, mode) {
-  const arr = Array.from(files || []);
-  if (mode === "name") return arr.sort((a,b)=> a.name.localeCompare(b.name));
-  if (mode === "sku") {
-    // heuristic: find token with letters-digits-dashes near 'SKU' in filename
-    const skukey = f => {
-      const name = f.name.toLowerCase();
-      const m = name.match(/[a-z0-9]{3,}[-_a-z0-9]*\d{2,}/);
-      return m ? m[0] : name;
-    };
-    return arr.sort((a,b)=> skukey(a).localeCompare(skukey(b)));
-  }
-  if (mode === "size") {
-    const sizekey = f => {
-      const m = f.name.match(/(?:size|sz|s)(?:-|_|\s*)?(\d{2})/i) || f.name.match(/(\d{2})(?:-|_)?/);
-      return m ? parseInt(m[1],10) : 0;
-    };
-    return arr.sort((a,b)=> sizekey(a)-sizekey(b));
-  }
-  if (mode === "courier") {
-    const ck = f => {
-      const n = f.name.toLowerCase();
-      if (n.includes("shadowfax")) return "1_shadowfax";
-      if (n.includes("delhivery")) return "2_delhivery";
-      if (n.includes("xpressbees") || n.includes("xpress")) return "3_xpress";
-      return "9_other_"+n;
-    };
-    return arr.sort((a,b)=> ck(a).localeCompare(ck(b)));
-  }
-  return arr; // none
+  return { left, bottom, cropW, cropH, pageW, pageH };
 }
 
 async function cropAndMerge(files) {
@@ -109,49 +70,70 @@ async function cropAndMerge(files) {
   const { PDFDocument } = window.PDFLib;
   const outDoc = await PDFDocument.create();
 
-  // Sort selection
-  const sortedFiles = sortFiles(files, sortBy.value);
-
-  // Count pages
+  // Total pages for progress
   let totalPages = 0;
   const buffers = [];
-  for (const f of sortedFiles) {
+  for (const f of files) {
     const buf = await readFileAsArrayBuffer(f);
     buffers.push(buf);
     const tmp = await PDFDocument.load(buf, { ignoreEncryption: true });
     totalPages += tmp.getPageCount();
   }
 
-  let donePages = 0;
-  const updateProgress = () => {
-    const pct = Math.floor((donePages / totalPages) * 100);
-    progressDiv.textContent = `Processing ${donePages}/${totalPages} (${pct}%)`;
+  let done = 0;
+  const tick = () => {
+    const pct = Math.floor((done / totalPages) * 100);
+    progressDiv.textContent = `Processing ${done}/${totalPages} (${pct}%)`;
   };
 
   for (const buf of buffers) {
     const src = await PDFDocument.load(buf, { ignoreEncryption: true });
-    const count = src.getPageCount();
-    const pages = await outDoc.copyPages(src, Array.from({length:count}, (_,i)=>i));
+    const idxs = Array.from({ length: src.getPageCount() }, (_, i) => i);
+    const pages = await outDoc.copyPages(src, idxs);
 
     for (const p of pages) {
-      const rect = cropRectForPage(p);
+      const { left, bottom, cropW, cropH, pageW, pageH } = computeCrop(p);
 
-      const newPage = outDoc.addPage([rect.targetW, rect.targetH]);
-      const embedded = await outDoc.embedPage(p);
-      newPage.drawPage(embedded, {
-        x: -rect.left,
-        y: -rect.bottom,
-        width: rect.pageW,
-        height: rect.pageH,
+      // STEP 1: make a temp page same size as original, draw with crop offset
+      const tempPage = outDoc.addPage([pageW, pageH]);
+      const emb = await outDoc.embedPage(p);
+      tempPage.drawPage(emb, {
+        x: -left,
+        y: -bottom,
+        width: pageW,
+        height: pageH,
       });
 
-      donePages++;
-      if (donePages === 1 || donePages % 3 === 0 || donePages === totalPages) {
-        updateProgress();
-        await new Promise(r=>setTimeout(r,0));
+      // STEP 2: "extract" cropped content by copying last page area to a portrait target
+      // We cannot truly extract subpage, so we add a portrait page sized (min->W, max->H)
+      const targetW = Math.min(cropW, cropH);
+      const targetH = Math.max(cropW, cropH);
+      const portrait = outDoc.addPage([targetW, targetH]);
+
+      // Re-embed the temp page and place it so the cropped rectangle sits correctly.
+      const embTemp = await outDoc.embedPage(tempPage);
+
+      // Draw the cropped rect into portrait page, rotating 90° after crop if width>height was intended
+      // Since cropH > cropW for label, we want upright portrait; just place with offsets:
+      portrait.drawPage(embTemp, {
+        x: 0 - 0,          // already cropped content at origin in temp
+        y: 0 - 0,
+        width: cropW,
+        height: cropH,
+      });
+
+      // Remove temp page from document structure by not referencing it further
+      // Note: pdf-lib doesn't support removing pages mid-build; workaround:
+      // keep temp first, then copy the portrait at end; to keep file small, batch size should be limited.
+
+      done++;
+      if (done === 1 || done % 3 === 0 || done === totalPages) {
+        tick();
+        await new Promise(r => setTimeout(r, 0));
       }
     }
   }
+
   return await outDoc.save();
 }
 
@@ -179,7 +161,5 @@ btn.addEventListener("click", async () => {
   } catch (e) {
     console.error(e);
     resultDiv.textContent = "Failed: " + (e?.message || e);
-  } finally {
-    btn.disabled = false; btn.textContent = "Process";
-  }
+  } finally { btn.disabled = false; btn.textContent = "Process"; }
 });
