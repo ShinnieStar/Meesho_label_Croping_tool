@@ -1,4 +1,4 @@
-/* Shinnie Star — Meesho Crop (Lite) crop-first then rotate, with progress % */
+/* Shinnie Star — Meesho Crop (Lite) Python-parity: crop first, then rotate cropped block */
 
 const btn = document.getElementById("processBtn");
 const filesInput = document.getElementById("pdfs");
@@ -22,7 +22,7 @@ themeToggle.addEventListener("click", () => {
 refreshBtn?.addEventListener("click", () => window.location.reload());
 backBtn?.addEventListener("click", () => window.location.href = "https://www.shinniestar.com");
 
-/* pdf-lib loader */
+/* pdf-lib */
 let pdfLibReady = false;
 async function ensurePDFLib() {
   if (pdfLibReady && window.PDFLib) return;
@@ -43,26 +43,23 @@ function readFileAsArrayBuffer(file) {
   });
 }
 
-/* Calibrated constants (Python-tuned) */
+/* Python-tuned constants (from your desktop runs) */
 const LEFT_X = 10;
 const RIGHT_X_MAX = 585;
 const TOP_Y_MAX = 832;
-const CALIB_INVOICE_PT = 292;  // ~invoice band height from bottom
-const EXTRA_PT  = -8;          // include a bit more above band
+const CALIB_INVOICE_PT = 292;   // where invoice band starts from bottom
+const EXTRA_PT  = -8;           // include a bit more label
 
 function computeCrop(p) {
   const pageW = p.getWidth();
   const pageH = p.getHeight();
-
   const left = LEFT_X;
   const right = Math.min(RIGHT_X_MAX, pageW - 10);
   const top = Math.min(TOP_Y_MAX, pageH - 10);
   const bottom = Math.max(100, pageH - CALIB_INVOICE_PT + EXTRA_PT);
-
   const cropW = right - left;
   const cropH = Math.max(120, top - bottom);
-
-  return { left, bottom, cropW, cropH, pageW, pageH };
+  return { pageW, pageH, left, bottom, cropW, cropH };
 }
 
 async function cropAndMerge(files) {
@@ -70,66 +67,66 @@ async function cropAndMerge(files) {
   const { PDFDocument } = window.PDFLib;
   const outDoc = await PDFDocument.create();
 
-  // Total pages for progress
-  let totalPages = 0;
-  const buffers = [];
+  // total pages
+  let total = 0;
+  const bufs = [];
   for (const f of files) {
-    const buf = await readFileAsArrayBuffer(f);
-    buffers.push(buf);
-    const tmp = await PDFDocument.load(buf, { ignoreEncryption: true });
-    totalPages += tmp.getPageCount();
+    const b = await readFileAsArrayBuffer(f);
+    bufs.push(b);
+    const tmp = await PDFDocument.load(b, { ignoreEncryption: true });
+    total += tmp.getPageCount();
   }
-
   let done = 0;
   const tick = () => {
-    const pct = Math.floor((done / totalPages) * 100);
-    progressDiv.textContent = `Processing ${done}/${totalPages} (${pct}%)`;
+    const pct = Math.floor((done / total) * 100);
+    progressDiv.textContent = `Processing ${done}/${total} (${pct}%)`;
   };
 
-  for (const buf of buffers) {
-    const src = await PDFDocument.load(buf, { ignoreEncryption: true });
+  for (const b of bufs) {
+    const src = await PDFDocument.load(b, { ignoreEncryption: true });
     const idxs = Array.from({ length: src.getPageCount() }, (_, i) => i);
     const pages = await outDoc.copyPages(src, idxs);
 
     for (const p of pages) {
-      const { left, bottom, cropW, cropH, pageW, pageH } = computeCrop(p);
+      const { pageW, pageH, left, bottom, cropW, cropH } = computeCrop(p);
 
-      // STEP 1: make a temp page same size as original, draw with crop offset
-      const tempPage = outDoc.addPage([pageW, pageH]);
+      // A) Draw original into a temp page same size, offset to reveal only crop area
+      const temp = outDoc.addPage([pageW, pageH]);
       const emb = await outDoc.embedPage(p);
-      tempPage.drawPage(emb, {
+      temp.drawPage(emb, {
         x: -left,
         y: -bottom,
         width: pageW,
         height: pageH,
       });
 
-      // STEP 2: "extract" cropped content by copying last page area to a portrait target
-      // We cannot truly extract subpage, so we add a portrait page sized (min->W, max->H)
-      const targetW = Math.min(cropW, cropH);
-      const targetH = Math.max(cropW, cropH);
-      const portrait = outDoc.addPage([targetW, targetH]);
+      // B) Now place cropped block onto final portrait page
+      const portraitW = Math.min(cropW, cropH);
+      const portraitH = Math.max(cropW, cropH);
+      const finalPage = outDoc.addPage([portraitW, portraitH]);
 
-      // Re-embed the temp page and place it so the cropped rectangle sits correctly.
-      const embTemp = await outDoc.embedPage(tempPage);
+      const embTemp = await outDoc.embedPage(temp);
 
-      // Draw the cropped rect into portrait page, rotating 90° after crop if width>height was intended
-      // Since cropH > cropW for label, we want upright portrait; just place with offsets:
-      portrait.drawPage(embTemp, {
-        x: 0 - 0,          // already cropped content at origin in temp
-        y: 0 - 0,
-        width: cropW,
-        height: cropH,
-      });
+      // If cropped block is wider than tall, rotate 270 so portrait ban jaye
+      const needRotate = cropW > cropH;
 
-      // Remove temp page from document structure by not referencing it further
-      // Note: pdf-lib doesn't support removing pages mid-build; workaround:
-      // keep temp first, then copy the portrait at end; to keep file small, batch size should be limited.
+      if (!needRotate) {
+        // portrait content already: draw at origin
+        finalPage.drawPage(embTemp, {
+          x: 0, y: 0, width: cropW, height: cropH,
+        });
+      } else {
+        // rotate 270: use drawPage with rotation matrix via rotateRadians helper
+        // pdf-lib v1.17: use degrees via rotate: { angle: degrees }
+        finalPage.drawPage(embTemp, {
+          x: 0, y: 0, width: cropW, height: cropH, rotate: PDFLib.degrees(-90),
+        });
+      }
 
       done++;
-      if (done === 1 || done % 3 === 0 || done === totalPages) {
+      if (done === 1 || done % 3 === 0 || done === total) {
         tick();
-        await new Promise(r => setTimeout(r, 0));
+        await new Promise(r=>setTimeout(r,0));
       }
     }
   }
