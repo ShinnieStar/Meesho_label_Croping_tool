@@ -1,6 +1,6 @@
 /* Shinnie Star — Meesho Crop (Lite) 2-step:
    Step 1: Crop only (no rotate) -> memory
-   Step 2: Download Rotated (90° CW) */
+   Step 2: Download Rotated (90° CW with swapped canvas) */
 
 const btnCrop = document.getElementById("processBtn");
 const btnRotate = document.getElementById("rotateBtn");
@@ -95,7 +95,7 @@ async function cropOnly(files) {
       const pageW = ref.getWidth();
       const pageH = ref.getHeight();
 
-      // Output page exactly crop size
+      // Output page equals crop area (no rotation)
       const finalPage = outDoc.addPage([cropW, cropH]);
       const emb = await outDoc.embedPage(ref);
       finalPage.drawPage(emb, {
@@ -114,7 +114,7 @@ async function cropOnly(files) {
   return lastCroppedBytes;
 }
 
-/* Step 2: Rotate 90° CW and download (robust: swapped canvas, no extra translate) */
+/* Step 2: Rotate safely (swap canvas to avoid blanks) */
 async function downloadRotated() {
   if (!lastCroppedBytes) {
     resultDiv.textContent = "No cropped PDF in memory. Crop first.";
@@ -138,18 +138,12 @@ async function downloadRotated() {
     const w = p.getWidth();
     const h = p.getHeight();
 
-    // Target page with swapped dimensions for 90° CW
+    // Target page size swapped for 90° CW
     const finalPage = outDoc.addPage([h, w]);
 
     const emb = await outDoc.embedPage(p);
-    // Full-bleed draw with rotate(90) — no offset translation needed
-    finalPage.drawPage(emb, {
-      x: 0,
-      y: 0,
-      width: w,
-      height: h,
-      rotate: degrees(90),
-    });
+    // No translate tricks: full page draw with rotate so it always fits
+    finalPage.drawPage(emb, { x: 0, y: 0, width: w, height: h, rotate: degrees(90) });
 
     done++;
     if (done === 1 || done % 3 === 0 || done === total) { tick(); await new Promise(r=>setTimeout(r,0)); }
