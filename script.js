@@ -1,4 +1,4 @@
-/* Shinnie Star — Meesho Crop (Lite) dynamic-ish cutoff + portrait + theme */
+/* Shinnie Star — Meesho Crop (Lite) fixed cutoff + portrait; no sliders */
 
 const btn = document.getElementById("processBtn");
 const filesInput = document.getElementById("pdfs");
@@ -7,10 +7,6 @@ const progressDiv = document.getElementById("progress");
 const refreshBtn = document.getElementById("refreshBtn");
 const backBtn = document.getElementById("backBtn");
 const themeToggle = document.getElementById("themeToggle");
-const cutoff = document.getElementById("cutoff");
-const cutVal = document.getElementById("cutVal");
-const extra = document.getElementById("extra");
-const extraVal = document.getElementById("extraVal");
 
 /* Theme */
 (function initTheme() {
@@ -25,9 +21,6 @@ themeToggle.addEventListener("click", () => {
 });
 refreshBtn?.addEventListener("click", () => window.location.reload());
 backBtn?.addEventListener("click", () => window.location.href = "https://www.shinniestar.com");
-
-cutoff.addEventListener("input", () => cutVal.textContent = cutoff.value);
-extra.addEventListener("input", () => extraVal.textContent = extra.value);
 
 async function ensurePDFLib() {
   if (!window.PDFLib) {
@@ -48,17 +41,26 @@ function readFileAsArrayBuffer(file) {
   });
 }
 
-// Heuristic crop: bottom = pageH - cutoff + extra; left/right fixed; portrait output
-function getCropForPage(p, cutoffPt, extraPt) {
+/* Fixed params to mimic Python v3 defaults */
+const LEFT_X = 10;
+const RIGHT_X_MAX = 585;
+const TOP_Y_MAX = 832;
+const CUTOFF_PT = 260;   // invoice band thickness heuristic
+const EXTRA_PT  = -8;    // include a bit more top like desktop
+
+function cropRectForPage(p) {
   const pageW = p.getWidth();
   const pageH = p.getHeight();
-  const left = 10;
-  const right = Math.min(585, pageW - 10);
-  const top = Math.min(832, pageH - 10);
-  const bottom = Math.max(100, pageH - cutoffPt + Number(extraPt || 0));
+  const left = LEFT_X;
+  const right = Math.min(RIGHT_X_MAX, pageW - 10);
+  const top = Math.min(TOP_Y_MAX, pageH - 10);
+  const bottom = Math.max(100, pageH - CUTOFF_PT + EXTRA_PT);
   const width = right - left;
   const height = Math.max(120, top - bottom);
-  return { left, bottom, width, height, pageW, pageH };
+  // Portrait target size
+  const targetW = Math.min(width, height);
+  const targetH = Math.max(width, height);
+  return { left, bottom, width, height, targetW, targetH, pageW, pageH };
 }
 
 async function cropAndMerge(files) {
@@ -66,10 +68,7 @@ async function cropAndMerge(files) {
   const { PDFDocument } = window.PDFLib;
   const outDoc = await PDFDocument.create();
 
-  const cutoffPt = Number(cutoff.value);   // 260 default
-  const extraPt  = Number(extra.value);    // -8 default
-
-  let processedPages = 0;
+  let processed = 0;
   for (const f of files) {
     const buf = await readFileAsArrayBuffer(f);
     const src = await PDFDocument.load(buf, { ignoreEncryption: true });
@@ -77,39 +76,20 @@ async function cropAndMerge(files) {
     const pages = await outDoc.copyPages(src, Array.from({length:count}, (_,i)=>i));
 
     for (const p of pages) {
-      const rect = getCropForPage(p, cutoffPt, extraPt);
-
-      // Portrait output page (swap if needed)
-      const targetW = rect.width < rect.height ? rect.width : rect.height;
-      const targetH = rect.width < rect.height ? rect.height : rect.width;
-
-      const newPage = outDoc.addPage([targetW, targetH]);
+      const rect = cropRectForPage(p);
+      const newPage = outDoc.addPage([rect.targetW, rect.targetH]);
       const embedded = await outDoc.embedPage(p);
 
-      // Draw original page with offset so that crop rect aligns within target;
-      // If landscape, we mimic 90° rotate by swapping target dims and adjusting offsets
-      if (rect.width < rect.height) {
-        // Already portrait target; normal draw
-        newPage.drawPage(embedded, {
-          x: -rect.left,
-          y: -rect.bottom,
-          width: rect.pageW,
-          height: rect.pageH,
-        });
-      } else {
-        // Landscape: emulate rotate to portrait
-        newPage.drawPage(embedded, {
-          x: -rect.left,
-          y: -rect.bottom,
-          width: rect.pageW,
-          height: rect.pageH,
-        });
-      }
+      // Draw with offset so that crop area appears; emulate portrait by using taller target page
+      newPage.drawPage(embedded, {
+        x: -rect.left,
+        y: -rect.bottom,
+        width: rect.pageW,
+        height: rect.pageH,
+      });
 
-      processedPages++;
-      if (processedPages % 2 === 0) {
-        progressDiv.textContent = `Processed ${processedPages} pages…`;
-      }
+      processed++;
+      if (processed % 2 === 0) progressDiv.textContent = `Processed ${processed} pages…`;
     }
   }
 
@@ -133,7 +113,7 @@ btn.addEventListener("click", async () => {
   try {
     const bytes = await cropAndMerge(files);
     const ts = new Date().toISOString().replace(/[:.]/g, "-");
-    downloadPdf(bytes, `Shinnie Star Meesho Cropped ${ts}.pdf`);
+    downloadPdf(bytes, `Shinnie-Star-Meesho-Cropped-${ts}.pdf`);
     progressDiv.textContent = "Done."; resultDiv.textContent = "Downloaded cropped PDF.";
   } catch (e) {
     console.error(e);
