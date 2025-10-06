@@ -20,5 +20,5 @@ input[type=file] { width:100%; padding:10px; background:var(--ghost); color:var(
 button { margin-top:14px; padding:12px 16px; border:0; background:var(--acc); color:#061022; font-weight:700; border-radius:10px; cursor:pointer; }
 button:disabled { opacity:.7; cursor:not-allowed; }
 #result,#progress,#rotateStatus { margin-top:12px; font-size:14px; opacity:.95; }
-.controls, select#sortBy { display:none !important; } /* safety */
+.controls, select#sortBy { display:none !important; }
 @media (max-width:480px){ .container{ margin:12px 8px 24px; padding:16px; } }
