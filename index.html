@@ -5,11 +5,12 @@
   <title>Meesho Label Cropper</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <link rel="stylesheet" href="./style.css">
+  <link rel="icon" href="https://raw.githubusercontent.com/ShinnieStar/Meesho_label_Croping_tool/main/Logo.png">
 </head>
 <body>
   <div class="topbar">
     <div class="brand">
-      <img src="./assets/logo.png" alt="Shinnie Star" class="logo">
+      <img src="https://raw.githubusercontent.com/ShinnieStar/Meesho_label_Croping_tool/main/Logo.png" alt="Shinnie Star" class="logo">
       <span>Shinnie Star</span>
     </div>
     <button id="themeToggle" class="ghost-btn">Light</button>
@@ -20,13 +21,6 @@
 
     <label>PDF Files</label>
     <input id="pdfs" type="file" accept="application/pdf" multiple>
-
-    <div class="controls">
-      <label class="inline">Cutoff (above invoice): <span id="cutVal">260</span>pt</label>
-      <input id="cutoff" type="range" min="200" max="320" value="260" step="2">
-      <label class="inline">Extra top (+/−): <span id="extraVal">-8</span>pt</label>
-      <input id="extra" type="range" min="-20" max="20" value="-8" step="1">
-    </div>
 
     <div style="margin-top:10px;">
       <button id="processBtn">Process</button>
