@@ -1,4 +1,4 @@
-/* Shinnie Star — Meesho Crop (Lite) final: crop-first, correct rotate math, progress % */
+/* Shinnie Star — Meesho Crop (Lite) — ONLY CROP (no rotate) + progress % */
 
 const btn = document.getElementById("processBtn");
 const filesInput = document.getElementById("pdfs");
@@ -45,7 +45,7 @@ function readFileAsArrayBuffer(file) {
   });
 }
 
-/* Calibrated constants (desktop parity) */
+/* Calibrated constants (desktop parity, no rotate) */
 const LEFT_X = 10;
 const RIGHT_X_MAX = 585;
 const TOP_Y_MAX = 832;
@@ -64,19 +64,12 @@ function computeCropForPage(p) {
   return { pageW, pageH, left, bottom, cropW, cropH };
 }
 
-/* Correct rotate(-90) placement:
-   We want: (left,bottom) of source to map to (0,0) of final before rotation.
-   After rotate(-90) about final's origin, the drawn rect (width=pageW,height=pageH) rotates into:
-   new width = pageH, new height = pageW; but we sized final page to cropW x cropH (portrait).
-   Best approach: no scaling other than full-page scale, but we must pre-translate so that after rotation,
-   the visible cropped region aligns inside final portrait area. For rotate(-90), to keep the cropped region at origin,
-   use x = pageH - bottom - cropH and y = left to counteract rotation swap. */
 async function cropAndMerge(files) {
   await ensurePDFLib();
-  const { PDFDocument, degrees } = window.PDFLib;
+  const { PDFDocument } = window.PDFLib;
   const outDoc = await PDFDocument.create();
 
-  // Preload and count total pages for progress
+  // Preload and count total pages
   let total = 0;
   const buffers = [];
   for (const f of files) {
@@ -85,8 +78,9 @@ async function cropAndMerge(files) {
     const t = await PDFDocument.load(b, { ignoreEncryption: true });
     total += t.getPageCount();
   }
+
   let done = 0;
-  const update = () => {
+  const tick = () => {
     const pct = Math.floor((done / total) * 100);
     progressDiv.textContent = `Processing ${done}/${total} (${pct}%)`;
   };
@@ -94,49 +88,28 @@ async function cropAndMerge(files) {
   for (const b of buffers) {
     const src = await PDFDocument.load(b, { ignoreEncryption: true });
     const n = src.getPageCount();
-    const refs = await outDoc.copyPages(src, Array.from({ length: n }, (_, i) => i));
 
-    for (const ref of refs) {
-      const { pageW, pageH, left, bottom, cropW, cropH } = computeCropForPage(ref);
+    // Copy references from src into a temporary holder document to keep content fidelity
+    const idxs = Array.from({ length: n }, (_, i) => i);
+    const srcPages = await outDoc.copyPages(src, idxs);
 
-      // Decide orientation based on cropped block
-      const needRotate = cropW > cropH;
-      const finalW = Math.min(cropW, cropH);
-      const finalH = Math.max(cropW, cropH);
-      const finalPage = outDoc.addPage([finalW, finalH]);
+    for (const p of srcPages) {
+      const { pageW, pageH, left, bottom, cropW, cropH } = computeCropForPage(p);
 
-      const emb = await outDoc.embedPage(ref);
+      // Final page is exactly crop size (no rotation)
+      const finalPage = outDoc.addPage([cropW, cropH]);
 
-      if (!needRotate) {
-        // No rotation: translate so crop origin aligns with (0,0)
-        finalPage.drawPage(emb, {
-          x: -left,
-          y: -bottom,
-          width: pageW,
-          height: pageH,
-        });
-      } else {
-        // Rotate -90 deg with proper pre-translation
-        // When rotating -90 around (0,0), a point (x,y) maps to (y, -x).
-        // We want cropped rect lower-left to land at (0,0) after rotation.
-        // Solve for x,y so that rotated rect fits in finalW x finalH:
-        // Empirically correct offsets:
-        const xOffset = pageH - bottom - cropH; // shift up so bottom of crop reaches 0 after rotation
-        const yOffset = left;                   // shift right so left of crop reaches 0 after rotation
-        finalPage.drawPage(emb, {
-          x: xOffset,
-          y: yOffset,
-          width: pageW,
-          height: pageH,
-          rotate: degrees(-90),
-        });
-      }
+      // Draw original page with negative offsets so that cropped area fits final page
+      const emb = await outDoc.embedPage(p);
+      finalPage.drawPage(emb, {
+        x: -left,
+        y: -bottom,
+        width: pageW,
+        height: pageH,
+      });
 
       done++;
-      if (done === 1 || done % 3 === 0 || done === total) {
-        update();
-        await new Promise((r) => setTimeout(r, 0));
-      }
+      if (done === 1 || done % 3 === 0 || done === total) { tick(); await new Promise(r=>setTimeout(r,0)); }
     }
   }
 
@@ -147,26 +120,17 @@ function downloadPdf(bytes, name) {
   const blob = new Blob([bytes], { type: "application/pdf" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
-  a.href = url;
-  a.download = name;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
+  a.href = url; a.download = name;
+  document.body.appendChild(a); a.click(); a.remove();
   URL.revokeObjectURL(url);
 }
 
 btn.addEventListener("click", async () => {
-  resultDiv.textContent = "";
-  progressDiv.textContent = "";
-
+  resultDiv.textContent = ""; progressDiv.textContent = "";
   const files = Array.from(filesInput.files || []);
-  if (!files.length) {
-    resultDiv.textContent = "Please select at least one PDF.";
-    return;
-  }
+  if (!files.length) { resultDiv.textContent = "Please select at least one PDF."; return; }
 
-  btn.disabled = true;
-  btn.textContent = "Processing…";
+  btn.disabled = true; btn.textContent = "Processing…";
   try {
     const bytes = await cropAndMerge(files);
     const ts = new Date().toISOString().replace(/[:.]/g, "-");
@@ -176,8 +140,5 @@ btn.addEventListener("click", async () => {
   } catch (e) {
     console.error(e);
     resultDiv.textContent = "Failed: " + (e?.message || e);
-  } finally {
-    btn.disabled = false;
-    btn.textContent = "Process";
-  }
+  } finally { btn.disabled = false; btn.textContent = "Process"; }
 });
