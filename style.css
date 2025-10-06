@@ -41,7 +41,7 @@ button {
 }
 button:disabled { opacity:.7; cursor:not-allowed; }
 
-#result, #progress { margin-top:12px; font-size:14px; opacity:.95; }
+#result, #progress, #rotateStatus { margin-top:12px; font-size:14px; opacity:.95; }
 
 /* Safety: hide any leftover sort controls if cached HTML shows them */
 .controls, select#sortBy { display:none !important; }
