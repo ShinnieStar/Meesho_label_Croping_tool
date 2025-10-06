@@ -1,6 +1,7 @@
 /* Shinnie Star — Meesho Crop (Lite)
    A) Crop & Download (no rotate)
-   B) Rotate PDF (upload any, rotate 90 CW & download) */
+   B) Rotate PDF (upload any, rotate 90 CW & download)
+*/
 
 const btnCropDownload = document.getElementById("btnCropDownload");
 const filesInput = document.getElementById("pdfs");
@@ -24,7 +25,10 @@ if (!btnCropDownload || !filesInput) {
 (function initTheme() {
   const saved = localStorage.getItem("theme") || "dark";
   if (saved === "light") document.documentElement.classList.add("light");
-  if (themeToggle) themeToggle.textContent = document.documentElement.classList.contains("light") ? "Dark" : "Light";
+  if (themeToggle)
+    themeToggle.textContent = document.documentElement.classList.contains("light")
+      ? "Dark"
+      : "Light";
 })();
 themeToggle?.addEventListener("click", () => {
   const isLight = document.documentElement.classList.toggle("light");
@@ -44,12 +48,14 @@ async function ensurePDFLib() {
     const s = document.createElement("script");
     s.src = "https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/dist/pdf-lib.min.js";
     s.id = id;
-    s.onload = resolve; s.onerror = reject;
+    s.onload = resolve;
+    s.onerror = reject;
     document.body.appendChild(s);
   });
   pdfLibReady = true;
 }
 
+/* Utils */
 function readFileAsArrayBuffer(file) {
   return new Promise((res, rej) => {
     const r = new FileReader();
@@ -63,8 +69,11 @@ function downloadPdf(bytes, name) {
   const blob = new Blob([bytes], { type: "application/pdf" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
-  a.href = url; a.download = name;
-  document.body.appendChild(a); a.click(); a.remove();
+  a.href = url;
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
   URL.revokeObjectURL(url);
 }
 
@@ -74,7 +83,9 @@ const CROP_BOTTOM = 480;
 const CROP_RIGHT = 585;
 const CROP_TOP = 825;
 
-/* A) Crop & Download */
+/* =======================
+   A) Crop & Download
+======================= */
 async function cropAndDownload(files) {
   await ensurePDFLib();
   const { PDFDocument } = window.PDFLib;
@@ -117,7 +128,10 @@ async function cropAndDownload(files) {
       });
 
       done++;
-      if (done === 1 || done % 3 === 0 || done === total) { tick(); await new Promise(r=>setTimeout(r,0)); }
+      if (done === 1 || done % 3 === 0 || done === total) {
+        tick();
+        await new Promise((r) => setTimeout(r, 0));
+      }
     }
   }
 
@@ -128,9 +142,15 @@ async function cropAndDownload(files) {
   resultDiv.textContent = "Cropped PDF downloaded.";
 }
 
-/* B) Rotate-only: upload any PDF and rotate 90 CW */
+/* =======================
+   B) Rotate & Download (Fixed)
+======================= */
 async function rotateAndDownload(file) {
-  if (!file) { rotateStatus.textContent = "Select a PDF first."; return; }
+  if (!file) {
+    rotateStatus.textContent = "Select a PDF first.";
+    return;
+  }
+
   await ensurePDFLib();
   const { PDFDocument, degrees } = window.PDFLib;
 
@@ -146,16 +166,28 @@ async function rotateAndDownload(file) {
   };
 
   for (let i = 0; i < total; i++) {
-    const page = (await outDoc.copyPages(src, [i]))[0];
-    const w = page.getWidth();
-    const h = page.getHeight();
+    const [page] = await outDoc.copyPages(src, [i]);
+    const { width, height } = page.getSize();
 
-    const finalPage = outDoc.addPage([h, w]);
-    const emb = await outDoc.embedPage(page);
-    finalPage.drawPage(emb, { x: 0, y: 0, width: w, height: h, rotate: degrees(90) });
+    // Create a new page with swapped dimensions
+    const rotatedPage = outDoc.addPage([height, width]);
+
+    // Embed and draw the original page rotated 90 degrees CW
+    const embedded = await outDoc.embedPage(page);
+
+    rotatedPage.drawPage(embedded, {
+      x: 0,
+      y: width, // move content up
+      width,
+      height,
+      rotate: degrees(90),
+    });
 
     done++;
-    if (done === 1 || done % 3 === 0 || done === total) { tick(); await new Promise(r=>setTimeout(r,0)); }
+    if (done === 1 || done % 3 === 0 || done === total) {
+      tick();
+      await new Promise((r) => setTimeout(r, 0));
+    }
   }
 
   const bytes = await outDoc.save();
@@ -164,23 +196,46 @@ async function rotateAndDownload(file) {
   rotateStatus.textContent = "Done (100%).";
 }
 
-/* Event bindings */
+/* =======================
+   Event bindings
+======================= */
 btnCropDownload?.addEventListener("click", async () => {
-  resultDiv.textContent = ""; progressDiv.textContent = "";
+  resultDiv.textContent = "";
+  progressDiv.textContent = "";
   const files = Array.from(filesInput.files || []);
-  if (!files.length) { resultDiv.textContent = "Please select at least one PDF."; return; }
-  btnCropDownload.disabled = true; btnCropDownload.textContent = "Cropping…";
-  try { await cropAndDownload(files); }
-  catch(e){ console.error(e); resultDiv.textContent = "Failed: "+(e?.message||e); }
-  finally { btnCropDownload.disabled = false; btnCropDownload.textContent = "Crop & Download"; }
+  if (!files.length) {
+    resultDiv.textContent = "Please select at least one PDF.";
+    return;
+  }
+  btnCropDownload.disabled = true;
+  btnCropDownload.textContent = "Cropping…";
+  try {
+    await cropAndDownload(files);
+  } catch (e) {
+    console.error(e);
+    resultDiv.textContent = "Failed: " + (e?.message || e);
+  } finally {
+    btnCropDownload.disabled = false;
+    btnCropDownload.textContent = "Crop & Download";
+  }
 });
 
 btnRotateDownload?.addEventListener("click", async () => {
   rotateStatus.textContent = "";
   const f = rotateFile.files?.[0];
-  if (!f) { rotateStatus.textContent = "Select a PDF first."; return; }
-  btnRotateDownload.disabled = true; btnRotateDownload.textContent = "Rotating…";
-  try { await rotateAndDownload(f); }
-  catch(e){ console.error(e); rotateStatus.textContent = "Failed: "+(e?.message||e); }
-  finally { btnRotateDownload.disabled = false; btnRotateDownload.textContent = "Rotate & Download"; }
+  if (!f) {
+    rotateStatus.textContent = "Select a PDF first.";
+    return;
+  }
+  btnRotateDownload.disabled = true;
+  btnRotateDownload.textContent = "Rotating…";
+  try {
+    await rotateAndDownload(f);
+  } catch (e) {
+    console.error(e);
+    rotateStatus.textContent = "Failed: " + (e?.message || e);
+  } finally {
+    btnRotateDownload.disabled = false;
+    btnRotateDownload.textContent = "Rotate & Download";
+  }
 });
