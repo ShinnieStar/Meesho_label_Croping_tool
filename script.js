@@ -1,11 +1,9 @@
-/* Shinnie Star — Meesho Crop (Lite) FINAL
-   - Exactly 1 output page per source page
-   - Crop first
-   - Rotate 90 CW (optional toggle) with correct offsets
-   - Skip tiny/empty after crop
-   - Progress %  */
+/* Shinnie Star — Meesho Crop (Lite) 2-step:
+   Step 1: Crop only (no rotate), enable 'Download Rotated'
+   Step 2: Rotate 90° CW and download  */
 
-const btn = document.getElementById("processBtn");
+const btnCrop = document.getElementById("processBtn");
+const btnRotate = document.getElementById("rotateBtn");
 const filesInput = document.getElementById("pdfs");
 const resultDiv = document.getElementById("result");
 const progressDiv = document.getElementById("progress");
@@ -27,19 +25,17 @@ themeToggle?.addEventListener("click", () => {
 refreshBtn?.addEventListener("click", () => window.location.reload());
 backBtn?.addEventListener("click", () => (window.location.href = "https://www.shinniestar.com"));
 
-/* pdf-lib */
+/* pdf-lib loader */
 let pdfLibReady = false;
 async function ensurePDFLib() {
   if (pdfLibReady && window.PDFLib) return;
   await new Promise((resolve, reject) => {
     const s = document.createElement("script");
     s.src = "https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/dist/pdf-lib.min.js";
-    s.onload = resolve; s.onerror = reject;
-    document.body.appendChild(s);
+    s.onload = resolve; s.onerror = reject; document.body.appendChild(s);
   });
   pdfLibReady = true;
 }
-
 function readFileAsArrayBuffer(file) {
   return new Promise((res, rej) => {
     const r = new FileReader();
@@ -48,25 +44,26 @@ function readFileAsArrayBuffer(file) {
     r.readAsArrayBuffer(file);
   });
 }
+function downloadPdf(bytes, name) {
+  const blob = new Blob([bytes], { type: "application/pdf" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = name;
+  document.body.appendChild(a); a.click(); a.remove();
+  URL.revokeObjectURL(url);
+}
 
 /* Fixed crop box (Python parity) */
 const CROP_LEFT = 10;
 const CROP_BOTTOM = 480;
 const CROP_RIGHT = 585;
 const CROP_TOP = 825;
-const MIN_H = 120;
-const MIN_W = 200;
-const DO_ROTATE = true; // rotation ON
 
-function cropDims() {
-  const w = Math.max(10, CROP_RIGHT - CROP_LEFT);
-  const h = Math.max(10, CROP_TOP - CROP_BOTTOM);
-  return { w, h };
-}
+let lastCroppedBytes = null;
 
-async function cropAndMerge(files) {
+async function cropOnly(files) {
   await ensurePDFLib();
-  const { PDFDocument, degrees } = window.PDFLib;
+  const { PDFDocument } = window.PDFLib;
   const outDoc = await PDFDocument.create();
 
   // Count pages
@@ -79,13 +76,14 @@ async function cropAndMerge(files) {
     total += t.getPageCount();
   }
 
-  let done = 0, kept = 0, skipped = 0;
+  let done = 0;
   const tick = () => {
     const pct = Math.floor((done / total) * 100);
-    progressDiv.textContent = `Processed ${done}/${total} (${pct}%) • kept ${kept}, skipped ${skipped}`;
+    progressDiv.textContent = `Cropping ${done}/${total} (${pct}%)`;
   };
 
-  const { w: cropW, h: cropH } = cropDims();
+  const cropW = Math.max(10, CROP_RIGHT - CROP_LEFT);
+  const cropH = Math.max(10, CROP_TOP - CROP_BOTTOM);
 
   for (const b of buffers) {
     const src = await PDFDocument.load(b, { ignoreEncryption: true });
@@ -96,85 +94,94 @@ async function cropAndMerge(files) {
       const pageW = ref.getWidth();
       const pageH = ref.getHeight();
 
-      // Skip obviously invalid crop
-      if (cropW < MIN_W || cropH < MIN_H) { skipped++; done++; tick(); continue; }
-
-      // Create final page size:
-      // if rotate on, portrait target (min->W, max->H), else exact crop
-      let finalW = cropW, finalH = cropH;
-      if (DO_ROTATE) {
-        finalW = Math.min(cropW, cropH);
-        finalH = Math.max(cropW, cropH);
-      }
-
-      const finalPage = outDoc.addPage([finalW, finalH]);
+      // Final cropped page exactly crop size (no rotation)
+      const finalPage = outDoc.addPage([cropW, cropH]);
       const emb = await outDoc.embedPage(ref);
+      finalPage.drawPage(emb, {
+        x: -CROP_LEFT,
+        y: -CROP_BOTTOM,
+        width: pageW,
+        height: pageH,
+      });
 
-      if (!DO_ROTATE) {
-        // Only crop (no rotate)
-        finalPage.drawPage(emb, {
-          x: -CROP_LEFT,
-          y: -CROP_BOTTOM,
-          width: pageW,
-          height: pageH,
-        });
-      } else {
-        // Crop first, then rotate 90 CW in one transform:
-        // Place original so that crop region aligns with origin, then rotate about origin.
-        // For rotate about origin with pdf-lib, we supply rotate and pre-translation in x/y.
-        // Offsets derived to keep visible area in target bounds.
-        // After 90 CW, (x,y) -> (y, -x). Choose x,y so mapped rect fills [0..finalW/H].
-        const xOffset = -CROP_LEFT;
-        const yOffset = -CROP_BOTTOM;
-
-        // Empirically correct placement for 90 CW into portrait:
-        // Draw with rotate(90) and swap offsets:
-        finalPage.drawPage(emb, {
-          x: yOffset,               // becomes X after rotation
-          y: -(xOffset + pageW),   // becomes Y after rotation
-          width: pageW,
-          height: pageH,
-          rotate: degrees(90),
-        });
-      }
-
-      kept++;
       done++;
       if (done === 1 || done % 3 === 0 || done === total) { tick(); await new Promise(r=>setTimeout(r,0)); }
     }
   }
 
-  // Safety message if everything skipped
-  if (kept === 0) {
-    const p = outDoc.addPage([420, 180]);
-    p.drawText("No pages produced. Check crop coordinates.", { x: 20, y: 90, size: 12 });
+  lastCroppedBytes = await outDoc.save();
+  return lastCroppedBytes;
+}
+
+async function downloadRotated() {
+  if (!lastCroppedBytes) {
+    resultDiv.textContent = "No cropped PDF in memory. Crop first.";
+    return;
+  }
+  await ensurePDFLib();
+  const { PDFDocument, degrees } = window.PDFLib;
+
+  const src = await PDFDocument.load(lastCroppedBytes, { ignoreEncryption: true });
+  const outDoc = await PDFDocument.create();
+
+  const total = src.getPageCount();
+  let done = 0;
+  const tick = () => {
+    const pct = Math.floor((done / total) * 100);
+    progressDiv.textContent = `Rotating ${done}/${total} (${pct}%)`;
+  };
+
+  for (let i = 0; i < total; i++) {
+    const p = (await outDoc.copyPages(src, [i]))[0];
+    const w = p.getWidth();
+    const h = p.getHeight();
+    // Final portrait page
+    const finalW = Math.min(w, h);
+    const finalH = Math.max(w, h);
+    const finalPage = outDoc.addPage([finalW, finalH]);
+
+    const emb = await outDoc.embedPage(p);
+    // Rotate 90 CW; content will appear turned; since page size is portrait, it will fit
+    finalPage.drawPage(emb, { x: 0, y: 0, width: w, height: h, rotate: degrees(90) });
+
+    done++;
+    if (done === 1 || done % 3 === 0 || done === total) { tick(); await new Promise(r=>setTimeout(r,0)); }
   }
 
-  return await outDoc.save();
+  const bytes = await outDoc.save();
+  const ts = new Date().toISOString().replace(/[:.]/g, "-");
+  downloadPdf(bytes, `Shinnie-star_meesho_cropped_rotated_${ts}.pdf`);
+  progressDiv.textContent = "Done (100%).";
+  resultDiv.textContent = "Downloaded rotated PDF.";
 }
 
-function downloadPdf(bytes, name) {
-  const blob = new Blob([bytes], { type: "application/pdf" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url; a.download = name;
-  document.body.appendChild(a); a.click(); a.remove();
-  URL.revokeObjectURL(url);
-}
-
-btn.addEventListener("click", async () => {
+/* UI events */
+btnCrop.addEventListener("click", async () => {
   resultDiv.textContent = ""; progressDiv.textContent = "";
   const files = Array.from(filesInput.files || []);
   if (!files.length) { resultDiv.textContent = "Please select at least one PDF."; return; }
-  btn.disabled = true; btn.textContent = "Processing…";
+  btnCrop.disabled = true; btnCrop.textContent = "Cropping…";
+  btnRotate.style.display = "none";
   try {
-    const bytes = await cropAndMerge(files);
-    const ts = new Date().toISOString().replace(/[:.]/g, "-");
-    downloadPdf(bytes, `Shinnie-star_meesho_cropped_${ts}.pdf`);
-    progressDiv.textContent = "Done (100%).";
-    resultDiv.textContent = "Downloaded cropped PDF.";
+    await cropOnly(files);
+    resultDiv.textContent = "Cropped PDF ready in memory.";
+    btnRotate.style.display = "inline-block";
   } catch (e) {
     console.error(e);
     resultDiv.textContent = "Failed: " + (e?.message || e);
-  } finally { btn.disabled = false; btn.textContent = "Process"; }
+  } finally {
+    btnCrop.disabled = false; btnCrop.textContent = "Crop";
+  }
+});
+
+btnRotate.addEventListener("click", async () => {
+  btnRotate.disabled = true; btnRotate.textContent = "Rotating…";
+  try {
+    await downloadRotated();
+  } catch (e) {
+    console.error(e);
+    resultDiv.textContent = "Rotate failed: " + (e?.message || e);
+  } finally {
+    btnRotate.disabled = false; btnRotate.textContent = "Download Rotated";
+  }
 });
