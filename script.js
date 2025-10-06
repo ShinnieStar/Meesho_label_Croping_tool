@@ -1,4 +1,4 @@
-/* Shinnie Star — Meesho Crop (Lite) Python-parity: crop first, then rotate cropped block */
+/* Shinnie Star — Meesho Crop (Lite) exact Python order: crop first, then rotate into portrait */
 
 const btn = document.getElementById("processBtn");
 const filesInput = document.getElementById("pdfs");
@@ -43,12 +43,12 @@ function readFileAsArrayBuffer(file) {
   });
 }
 
-/* Python-tuned constants (from your desktop runs) */
+/* Python-calibrated constants */
 const LEFT_X = 10;
 const RIGHT_X_MAX = 585;
 const TOP_Y_MAX = 832;
-const CALIB_INVOICE_PT = 292;   // where invoice band starts from bottom
-const EXTRA_PT  = -8;           // include a bit more label
+const CALIB_INVOICE_PT = 292;
+const EXTRA_PT  = -8;
 
 function computeCrop(p) {
   const pageW = p.getWidth();
@@ -64,70 +64,67 @@ function computeCrop(p) {
 
 async function cropAndMerge(files) {
   await ensurePDFLib();
-  const { PDFDocument } = window.PDFLib;
+  const { PDFDocument, degrees } = window.PDFLib;
   const outDoc = await PDFDocument.create();
 
-  // total pages
+  // Preload and count pages
   let total = 0;
-  const bufs = [];
+  const buffers = [];
   for (const f of files) {
     const b = await readFileAsArrayBuffer(f);
-    bufs.push(b);
+    buffers.push(b);
     const tmp = await PDFDocument.load(b, { ignoreEncryption: true });
     total += tmp.getPageCount();
   }
+
   let done = 0;
   const tick = () => {
     const pct = Math.floor((done / total) * 100);
     progressDiv.textContent = `Processing ${done}/${total} (${pct}%)`;
   };
 
-  for (const b of bufs) {
+  for (const b of buffers) {
     const src = await PDFDocument.load(b, { ignoreEncryption: true });
     const idxs = Array.from({ length: src.getPageCount() }, (_, i) => i);
-    const pages = await outDoc.copyPages(src, idxs);
+    const srcPages = await outDoc.copyPages(src, idxs); // copy refs once
 
-    for (const p of pages) {
-      const { pageW, pageH, left, bottom, cropW, cropH } = computeCrop(p);
+    for (const srcPage of srcPages) {
+      const { pageW, pageH, left, bottom, cropW, cropH } = computeCrop(srcPage);
 
-      // A) Draw original into a temp page same size, offset to reveal only crop area
-      const temp = outDoc.addPage([pageW, pageH]);
-      const emb = await outDoc.embedPage(p);
-      temp.drawPage(emb, {
-        x: -left,
-        y: -bottom,
-        width: pageW,
-        height: pageH,
-      });
-
-      // B) Now place cropped block onto final portrait page
+      // Final portrait page size
       const portraitW = Math.min(cropW, cropH);
       const portraitH = Math.max(cropW, cropH);
       const finalPage = outDoc.addPage([portraitW, portraitH]);
 
-      const embTemp = await outDoc.embedPage(temp);
+      // Embed original source page (not temp), then apply translation + optional rotation
+      const emb = await outDoc.embedPage(srcPage);
 
-      // If cropped block is wider than tall, rotate 270 so portrait ban jaye
       const needRotate = cropW > cropH;
 
       if (!needRotate) {
-        // portrait content already: draw at origin
-        finalPage.drawPage(embTemp, {
-          x: 0, y: 0, width: cropW, height: cropH,
+        // No rotation: just translate so (left,bottom) moves to (0,0), then scale full page
+        finalPage.drawPage(emb, {
+          x: -left,
+          y: -bottom,
+          width: pageW,
+          height: pageH,
         });
       } else {
-        // rotate 270: use drawPage with rotation matrix via rotateRadians helper
-        // pdf-lib v1.17: use degrees via rotate: { angle: degrees }
-        finalPage.drawPage(embTemp, {
-          x: 0, y: 0, width: cropW, height: cropH, rotate: PDFLib.degrees(-90),
+        // Rotate cropped block by -90 degrees around origin after translation.
+        // To emulate: first translate so crop origin aligns, then rotate canvas.
+        // drawPage rotation rotates around lower-left of target; adjust translate accordingly.
+        // After rotation, width/height map swapped into portrait page.
+        finalPage.drawPage(emb, {
+          x: -left,
+          y: -bottom,
+          width: pageW,
+          height: pageH,
+          rotate: degrees(-90),
         });
       }
 
       done++;
-      if (done === 1 || done % 3 === 0 || done === total) {
-        tick();
-        await new Promise(r=>setTimeout(r,0));
-      }
+      if (done === 1 || done % 3 === 0 || done === total) { tick(); await new Promise(r=>setTimeout(r,0)); }
     }
   }
 
@@ -147,7 +144,6 @@ btn.addEventListener("click", async () => {
   resultDiv.textContent = ""; progressDiv.textContent = "";
   const files = Array.from(filesInput.files || []);
   if (!files.length) { resultDiv.textContent = "Please select at least one PDF."; return; }
-
   btn.disabled = true; btn.textContent = "Processing…";
   try {
     const bytes = await cropAndMerge(files);
