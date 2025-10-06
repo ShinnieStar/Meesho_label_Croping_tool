@@ -1,6 +1,6 @@
 /* Shinnie Star — Meesho Crop (Lite) 2-step:
-   Step 1: Crop only (no rotate), enable 'Download Rotated'
-   Step 2: Rotate 90° CW and download  */
+   Step 1: Crop only (no rotate) -> memory
+   Step 2: Download Rotated (90° CW) */
 
 const btnCrop = document.getElementById("processBtn");
 const btnRotate = document.getElementById("rotateBtn");
@@ -61,12 +61,13 @@ const CROP_TOP = 825;
 
 let lastCroppedBytes = null;
 
+/* Step 1: Crop only */
 async function cropOnly(files) {
   await ensurePDFLib();
   const { PDFDocument } = window.PDFLib;
   const outDoc = await PDFDocument.create();
 
-  // Count pages
+  // Count total pages
   let total = 0;
   const buffers = [];
   for (const f of files) {
@@ -94,7 +95,7 @@ async function cropOnly(files) {
       const pageW = ref.getWidth();
       const pageH = ref.getHeight();
 
-      // Final cropped page exactly crop size (no rotation)
+      // Output page exactly crop size
       const finalPage = outDoc.addPage([cropW, cropH]);
       const emb = await outDoc.embedPage(ref);
       finalPage.drawPage(emb, {
@@ -113,6 +114,7 @@ async function cropOnly(files) {
   return lastCroppedBytes;
 }
 
+/* Step 2: Rotate 90° CW and download (robust: swapped canvas, no extra translate) */
 async function downloadRotated() {
   if (!lastCroppedBytes) {
     resultDiv.textContent = "No cropped PDF in memory. Crop first.";
@@ -135,14 +137,19 @@ async function downloadRotated() {
     const p = (await outDoc.copyPages(src, [i]))[0];
     const w = p.getWidth();
     const h = p.getHeight();
-    // Final portrait page
-    const finalW = Math.min(w, h);
-    const finalH = Math.max(w, h);
-    const finalPage = outDoc.addPage([finalW, finalH]);
+
+    // Target page with swapped dimensions for 90° CW
+    const finalPage = outDoc.addPage([h, w]);
 
     const emb = await outDoc.embedPage(p);
-    // Rotate 90 CW; content will appear turned; since page size is portrait, it will fit
-    finalPage.drawPage(emb, { x: 0, y: 0, width: w, height: h, rotate: degrees(90) });
+    // Full-bleed draw with rotate(90) — no offset translation needed
+    finalPage.drawPage(emb, {
+      x: 0,
+      y: 0,
+      width: w,
+      height: h,
+      rotate: degrees(90),
+    });
 
     done++;
     if (done === 1 || done % 3 === 0 || done === total) { tick(); await new Promise(r=>setTimeout(r,0)); }
