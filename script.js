@@ -1,4 +1,4 @@
-/* Shinnie Star — Meesho Crop (Lite) FINAL: crop with fixed box, then rotate 90° CW, progress % */
+/* Shinnie Star — Meesho Crop (Lite) crop with fixed box, then rotate 90° CW, progress % */
 
 const btn = document.getElementById("processBtn");
 const filesInput = document.getElementById("pdfs");
@@ -43,7 +43,7 @@ function readFileAsArrayBuffer(file) {
   });
 }
 
-/* Your Python crop box (fixed) */
+/* Python crop box */
 const CROP_LEFT = 10;
 const CROP_BOTTOM = 480;
 const CROP_RIGHT = 585;
@@ -82,7 +82,7 @@ async function cropAndMerge(files) {
       const pageW = ref.getWidth();
       const pageH = ref.getHeight();
 
-      // 1) Draw original into cropped-sized canvas via negative offsets
+      // 1) Draw original into a cropped-size page via negative offsets (crop first)
       const cropped = outDoc.addPage([cropW, cropH]);
       const emb = await outDoc.embedPage(ref);
       cropped.drawPage(emb, {
@@ -92,14 +92,12 @@ async function cropAndMerge(files) {
         height: pageH,
       });
 
-      // 2) Rotate 90 CW into portrait
+      // 2) Rotate cropped block 90° CW to portrait
       const finalW = Math.min(cropW, cropH);
       const finalH = Math.max(cropW, cropH);
       const finalPage = outDoc.addPage([finalW, finalH]);
       const embCrop = await outDoc.embedPage(cropped);
-      finalPage.drawPage(embCrop, {
-        x: 0, y: 0, width: cropW, height: cropH, rotate: degrees(90),
-      });
+      finalPage.drawPage(embCrop, { x: 0, y: 0, width: cropW, height: cropH, rotate: degrees(90) });
 
       done++;
       if (done === 1 || done % 3 === 0 || done === total) { tick(); await new Promise(r=>setTimeout(r,0)); }
