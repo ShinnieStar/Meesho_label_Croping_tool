@@ -1,7 +1,4 @@
-/* Shinnie Star — Meesho Crop (Lite) ONLY CROP, no blanks:
-   - add only final cropped page
-   - skip tiny/empty pages
-   - progress %  */
+/* Shinnie Star — Meesho Crop (Lite) remove extras: only keep pages that look like labels */
 
 const btn = document.getElementById("processBtn");
 const filesInput = document.getElementById("pdfs");
@@ -46,17 +43,31 @@ function readFileAsArrayBuffer(file) {
   });
 }
 
-/* Fixed crop-box (from your Python) */
+/* Fixed crop-box (Python parity) */
 const CROP_LEFT = 10;
 const CROP_BOTTOM = 480;
 const CROP_RIGHT = 585;
 const CROP_TOP = 825;
-const MIN_HEIGHT_PT = 120; // drop pages smaller than this after crop
 
-function cropBox() {
-  const cropW = Math.max(10, CROP_RIGHT - CROP_LEFT);
-  const cropH = Math.max(10, CROP_TOP - CROP_BOTTOM);
-  return { cropW, cropH };
+/* Heuristics to accept a page as a real label */
+const MIN_H = 140;        // min cropped height
+const MIN_W = 250;        // min cropped width
+const BARCODE_MIN_WFR = 0.25; // barcode band should span at least 25% width
+
+function getCropDims() {
+  return {
+    cropW: Math.max(10, CROP_RIGHT - CROP_LEFT),
+    cropH: Math.max(10, CROP_TOP - CROP_BOTTOM),
+  };
+}
+
+function looksLikeLabel(cropW, cropH) {
+  if (cropH < MIN_H || cropW < MIN_W) return false;
+  // Barcode band rough presence by geometry window (lower third height window)
+  const bandH = Math.min(120, Math.max(60, Math.floor(cropH * 0.22)));
+  const bandW = cropW * BARCODE_MIN_WFR;
+  if (bandW < 120) return false; // too small to host bars
+  return true;
 }
 
 async function cropAndMerge(files) {
@@ -64,7 +75,7 @@ async function cropAndMerge(files) {
   const { PDFDocument } = window.PDFLib;
   const outDoc = await PDFDocument.create();
 
-  // Preload buffers and count pages
+  // Count total pages for progress
   let total = 0;
   const buffers = [];
   for (const f of files) {
@@ -74,30 +85,28 @@ async function cropAndMerge(files) {
     total += t.getPageCount();
   }
 
-  let done = 0, kept = 0;
+  const { cropW, cropH } = getCropDims();
+  let done = 0, kept = 0, skipped = 0;
+
   const tick = () => {
     const pct = Math.floor((done / total) * 100);
-    progressDiv.textContent = `Processing ${done}/${total} (${pct}%)`;
+    progressDiv.textContent = `Processed ${done}/${total} (${pct}%) • kept ${kept}, skipped ${skipped}`;
   };
-
-  const { cropW, cropH } = cropBox();
 
   for (const b of buffers) {
     const src = await PDFDocument.load(b, { ignoreEncryption: true });
-    const count = src.getPageCount();
-    const refs = await outDoc.copyPages(src, Array.from({ length: count }, (_, i) => i));
+    const n = src.getPageCount();
+    const refs = await outDoc.copyPages(src, Array.from({ length: n }, (_, i) => i));
 
     for (const ref of refs) {
       const pageW = ref.getWidth();
       const pageH = ref.getHeight();
 
-      // Skip if crop area is effectively empty height
-      if (cropH < MIN_HEIGHT_PT) { done++; tick(); continue; }
+      // Heuristic filter before drawing
+      if (!looksLikeLabel(cropW, cropH)) { skipped++; done++; tick(); continue; }
 
-      // Create final page exactly crop size
+      // Final cropped page
       const finalPage = outDoc.addPage([cropW, cropH]);
-
-      // Draw original with negative offsets to reveal only crop box
       const emb = await outDoc.embedPage(ref);
       finalPage.drawPage(emb, {
         x: -CROP_LEFT,
@@ -112,10 +121,10 @@ async function cropAndMerge(files) {
     }
   }
 
-  // Safety: if nothing kept, add a message page (unlikely)
+  // Safety: if all skipped by heuristic (rare), write first as fallback
   if (kept === 0) {
     const p = outDoc.addPage([400, 200]);
-    p.drawText("No pages after crop (check crop box).", { x: 20, y: 100, size: 12 });
+    p.drawText("All pages skipped as non-label by heuristic. Adjust thresholds.", { x: 20, y: 100, size: 12 });
   }
 
   return await outDoc.save();
