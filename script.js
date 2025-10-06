@@ -142,9 +142,7 @@ async function rotateAndDownload(file) {
     const w = page.getWidth();
     const h = page.getHeight();
 
-    // Target canvas swapped to avoid blank issues across viewers
-    const finalPage = outDoc.addPage([h, w]);
-
+    const finalPage = outDoc.addPage([h, w]); // swap
     const emb = await outDoc.embedPage(page);
     finalPage.drawPage(emb, { x: 0, y: 0, width: w, height: h, rotate: degrees(90) });
 
