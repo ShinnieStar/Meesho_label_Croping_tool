@@ -1,4 +1,4 @@
-/* Shinnie Star — Meesho Crop (Lite) fixed cutoff + portrait + progress % + perf fixes */
+/* Shinnie Star — Meesho Crop (Lite) fixed calibrated cutoff + portrait + progress % + basic sort */
 
 const btn = document.getElementById("processBtn");
 const filesInput = document.getElementById("pdfs");
@@ -7,6 +7,7 @@ const progressDiv = document.getElementById("progress");
 const refreshBtn = document.getElementById("refreshBtn");
 const backBtn = document.getElementById("backBtn");
 const themeToggle = document.getElementById("themeToggle");
+const sortBy = document.getElementById("sortBy");
 
 /* Theme */
 (function initTheme() {
@@ -22,21 +23,14 @@ themeToggle.addEventListener("click", () => {
 refreshBtn?.addEventListener("click", () => window.location.reload());
 backBtn?.addEventListener("click", () => window.location.href = "https://www.shinniestar.com");
 
-/* Ensure pdf-lib once */
+/* pdf-lib loader */
 let pdfLibReady = false;
 async function ensurePDFLib() {
   if (pdfLibReady && window.PDFLib) return;
   await new Promise((resolve, reject) => {
-    const existing = document.querySelector('script[data-pdflib]');
-    if (existing) { existing.onload = resolve; existing.onerror = reject; return; }
     const s = document.createElement("script");
     s.src = "https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/dist/pdf-lib.min.js";
-    s.async = true;
-    s.defer = true;
-    s.dataset.pdflib = "1";
-    s.onload = resolve;
-    s.onerror = reject;
-    document.body.appendChild(s);
+    s.onload = resolve; s.onerror = reject; document.body.appendChild(s);
   });
   pdfLibReady = true;
 }
@@ -50,11 +44,12 @@ function readFileAsArrayBuffer(file) {
   });
 }
 
-/* Fixed params to mimic your desktop tuning */
+/* Calibrated params from original PDF */
 const LEFT_X = 10;
 const RIGHT_X_MAX = 585;
 const TOP_Y_MAX = 832;
-const CUTOFF_PT = 260;
+// Using ~292pt calibrated invoice band height; add small extra -8 like desktop
+const CALIB_INVOICE_PT = 292;
 const EXTRA_PT  = -8;
 
 function cropRectForPage(p) {
@@ -64,16 +59,49 @@ function cropRectForPage(p) {
   const left = LEFT_X;
   const right = Math.min(RIGHT_X_MAX, pageW - 10);
   const top = Math.min(TOP_Y_MAX, pageH - 10);
-  const bottom = Math.max(100, pageH - CUTOFF_PT + EXTRA_PT);
+  const bottom = Math.max(100, pageH - CALIB_INVOICE_PT + EXTRA_PT);
 
   const width = right - left;
   const height = Math.max(120, top - bottom);
 
-  // Portrait target size: height >= width
+  // force portrait target size
   const targetW = Math.min(width, height);
   const targetH = Math.max(width, height);
 
   return { left, bottom, width, height, targetW, targetH, pageW, pageH };
+}
+
+/* Basic client-side sort (best-effort using filename tokens) */
+function sortFiles(files, mode) {
+  const arr = Array.from(files || []);
+  if (mode === "name") return arr.sort((a,b)=> a.name.localeCompare(b.name));
+  if (mode === "sku") {
+    // heuristic: find token with letters-digits-dashes near 'SKU' in filename
+    const skukey = f => {
+      const name = f.name.toLowerCase();
+      const m = name.match(/[a-z0-9]{3,}[-_a-z0-9]*\d{2,}/);
+      return m ? m[0] : name;
+    };
+    return arr.sort((a,b)=> skukey(a).localeCompare(skukey(b)));
+  }
+  if (mode === "size") {
+    const sizekey = f => {
+      const m = f.name.match(/(?:size|sz|s)(?:-|_|\s*)?(\d{2})/i) || f.name.match(/(\d{2})(?:-|_)?/);
+      return m ? parseInt(m[1],10) : 0;
+    };
+    return arr.sort((a,b)=> sizekey(a)-sizekey(b));
+  }
+  if (mode === "courier") {
+    const ck = f => {
+      const n = f.name.toLowerCase();
+      if (n.includes("shadowfax")) return "1_shadowfax";
+      if (n.includes("delhivery")) return "2_delhivery";
+      if (n.includes("xpressbees") || n.includes("xpress")) return "3_xpress";
+      return "9_other_"+n;
+    };
+    return arr.sort((a,b)=> ck(a).localeCompare(ck(b)));
+  }
+  return arr; // none
 }
 
 async function cropAndMerge(files) {
@@ -81,12 +109,15 @@ async function cropAndMerge(files) {
   const { PDFDocument } = window.PDFLib;
   const outDoc = await PDFDocument.create();
 
-  // Count total pages for progress
+  // Sort selection
+  const sortedFiles = sortFiles(files, sortBy.value);
+
+  // Count pages
   let totalPages = 0;
-  const fileBuffers = [];
-  for (const f of files) {
+  const buffers = [];
+  for (const f of sortedFiles) {
     const buf = await readFileAsArrayBuffer(f);
-    fileBuffers.push(buf);
+    buffers.push(buf);
     const tmp = await PDFDocument.load(buf, { ignoreEncryption: true });
     totalPages += tmp.getPageCount();
   }
@@ -97,20 +128,16 @@ async function cropAndMerge(files) {
     progressDiv.textContent = `Processing ${donePages}/${totalPages} (${pct}%)`;
   };
 
-  for (const buf of fileBuffers) {
+  for (const buf of buffers) {
     const src = await PDFDocument.load(buf, { ignoreEncryption: true });
     const count = src.getPageCount();
-    // Copy all pages references first (faster than per-page load)
-    const pages = await outDoc.copyPages(src, Array.from({ length: count }, (_, i) => i));
+    const pages = await outDoc.copyPages(src, Array.from({length:count}, (_,i)=>i));
 
     for (const p of pages) {
       const rect = cropRectForPage(p);
 
-      // Create portrait page once; pdf-lib lacks direct rotate during draw,
-      // so we set target page portrait and offset original content.
       const newPage = outDoc.addPage([rect.targetW, rect.targetH]);
       const embedded = await outDoc.embedPage(p);
-
       newPage.drawPage(embedded, {
         x: -rect.left,
         y: -rect.bottom,
@@ -121,12 +148,10 @@ async function cropAndMerge(files) {
       donePages++;
       if (donePages === 1 || donePages % 3 === 0 || donePages === totalPages) {
         updateProgress();
-        // allow UI to paint
-        await new Promise(r => setTimeout(r, 0));
+        await new Promise(r=>setTimeout(r,0));
       }
     }
   }
-
   return await outDoc.save();
 }
 
@@ -140,9 +165,7 @@ function downloadPdf(bytes, name) {
 }
 
 btn.addEventListener("click", async () => {
-  resultDiv.textContent = "";
-  progressDiv.textContent = "";
-
+  resultDiv.textContent = ""; progressDiv.textContent = "";
   const files = Array.from(filesInput.files || []);
   if (!files.length) { resultDiv.textContent = "Please select at least one PDF."; return; }
 
